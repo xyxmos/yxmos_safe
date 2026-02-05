@@ -10,7 +10,7 @@
 
 ### 🚀 安装与运行
 ```bash
-git clone [https://github.com/YourUsername/LISA-Sentinel.git](https://github.com/YourUsername/LISA-Sentinel.git)
-cd LISA-Sentinel
-chmod +x lisa_sentinel_elite.sh
-sudo ./lisa_sentinel_elite.sh
+git clone https://github.com/xyxmos/yxmos_safe.git
+cd yxmos_safe
+chmod +x install.sh
+sudo ./install.sh
