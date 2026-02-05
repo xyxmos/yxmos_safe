@@ -10,7 +10,4 @@
 
 ### 🚀 安装与运行
 ```bash
-git clone https://github.com/xyxmos/yxmos_safe.git
-cd yxmos_safe
-chmod +x install.sh
-sudo ./install.sh
+curl -sSO https://raw.githubusercontent.com/xyxmos/yxmos_safe/main/install.sh && bash install.sh
