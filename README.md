@@ -7,8 +7,8 @@
 - **证据链提取**: 清理进程时自动提取二进制路径及实时网络连接，确保精准查杀。
 - **协议栈加固**: 动态 WAF 规则，阻断非法扫描与畸形包攻击。
 - **云端通报**: 对接钉钉/TG，将入侵尝试实时推送到你的手机。
+  
 
 ### 🚀 安装与运行
 ```bash
 curl -sSO https://raw.githubusercontent.com/xyxmos/yxmos_safe/main/install.sh && bash install.sh
-![Uploading b44af832ceb3f737408584b09d711aa2.png…]()
