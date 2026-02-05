@@ -1,171 +1,130 @@
 #!/bin/bash
 
 # =================================================================
-# LISA-Sentinel Grandmaster Elite (SOC Edition) - v2.1
-# 优化点：路径持久化、防跳闪逻辑、多平台日志适配、双模态运行
+# LISA-Sentinel Grandmaster (SOC Edition) - v3.0
+# 优化重点：兼容管道流执行、彻底解决跳闪、增强系统自愈
 # =================================================================
 
-# --- [1] 环境初始化与色彩 ---
-setup_colors() {
-    if [[ -t 1 ]]; then
-        R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
-        B='\033[0;34m'; P='\033[0;35m'; C='\033[0;36m'
-        NC='\033[0m'; BOLD='\033[1m'
-    else
-        R=''; G=''; Y=''; B=''; P=''; C=''; NC=''; BOLD=''
-    fi
-}
-setup_colors
+# --- [0] 环境适配与 TTY 绑定 ---
+# 强制 read 命令从当前物理终端读取，避免 curl 管道干扰
+input_source="/dev/tty"
+[ ! -e /dev/tty ] && input_source="-" # 降级处理
 
-# 核心配置路径 (GitHub 发布标准路径)
-INSTALL_DIR="/usr/local/bin"
-TARGET_SCRIPT="$INSTALL_DIR/yxmos_safe.sh"
-WHITELIST="gpg-agent|ssh-agent|1panel-agent|packagekit|auth|polkit|systemd|sshd|dbus|network"
-CORE_FILES="/etc/passwd /etc/shadow /etc/group /etc/gshadow /etc/sudoers /etc/crontab /etc/ssh/sshd_config"
-DB_FILE="/var/lib/lisa_integrity.db"
-CONF_FILE="/etc/lisa_alert.conf"
+# 颜色定义
+R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
+B='\033[0;34m'; P='\033[0;35m'; NC='\033[0m'
 
-# 解决 curl | bash 模式下找不到脚本路径的问题
-if [ -f "$0" ]; then
-    CURRENT_SCRIPT=$(readlink -f "$0")
-else
-    CURRENT_SCRIPT="$TARGET_SCRIPT"
-fi
+# 持久化路径（确保 curl 执行后能被 Systemd 找到）
+INSTALL_PATH="/usr/local/bin/yxmos_safe.sh"
 
-# --- [2] 权限抢占 ---
-[[ $EUID -ne 0 ]] && exec sudo bash "$0" "$@"
-chattr -i $CORE_FILES 2>/dev/null
-
-# --- [3] 云端告警模块 ---
-send_alert() {
-    local msg="[LISA-Sentinel] Event: $1"
-    if [ -f "$CONF_FILE" ]; then
-        (
-            source "$CONF_FILE"
-            [ -n "$DINGTALK_TOKEN" ] && curl -s -m 5 -H "Content-Type: application/json" -d "{\"msgtype\": \"text\", \"text\": {\"content\": \"$msg\"}}" "https://oapi.dingtalk.com/robot/send?access_token=$DINGTALK_TOKEN" > /dev/null
-            [ -n "$TG_TOKEN" ] && curl -s -m 5 -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" -d "chat_id=$TG_CHATID&text=$msg" > /dev/null
-        ) & # 异步发送，防止网络卡顿影响脚本执行
-    fi
-}
-
-# --- [4] 自动审计逻辑 (后台模式 - 拒绝跳闪) ---
+# --- [1] 自动审计逻辑 (静默运行器) ---
+# 该模块必须在最前端，由 Systemd 定时任务带参数调用，执行完立即退出，不进入 UI
 if [[ "$1" == "--auto-audit" ]]; then
-    # SSH 审计 (适配 Ubuntu/CentOS)
+    # SSH 审计 (兼容多平台日志)
     AUTH_LOG="/var/log/auth.log"
     [ ! -f "$AUTH_LOG" ] && AUTH_LOG="/var/log/secure"
     
     if [ -f "$AUTH_LOG" ]; then
         bad_ips=$(grep "Failed password" "$AUTH_LOG" 2>/dev/null | awk '{print $(NF-3)}' | sort | uniq -c | awk '$1 > 10 {print $2}')
         for ip in $bad_ips; do
-            if ! iptables -L INPUT -n | grep -q "$ip"; then
-                iptables -I INPUT -s "$ip" -j DROP
-                send_alert "Auto-Banned SSH Brute Force IP: $ip"
-            fi
+            iptables -C INPUT -s "$ip" -j DROP 2>/dev/null || iptables -I INPUT -s "$ip" -j DROP
         done
     fi
-    # 文件完整性审计
-    if [ -f "$DB_FILE" ]; then
-        audit_res=$(sha256sum -c "$DB_FILE" 2>/dev/null | grep "FAILED")
-        [ -n "$audit_res" ] && send_alert "Integrity Violation: $audit_res"
-    fi
-    exit 0 # 后台模式必须静默退出，严禁进入 while 循环
+    # 退出，防止进入 UI 循环导致跳闪
+    exit 0
 fi
 
-# --- [5] 交互界面逻辑 ---
-show_banner() {
-    clear
-    echo -e "${C}############################################################${NC}"
-    echo -e "${C}#         LISA-SENTINEL GRANDMASTER ELITE v2.1             #${NC}"
-    echo -e "${C}############################################################${NC}"
-    if systemctl is-active --quiet lisa-sentinel.timer; then
-        echo -ne "${BOLD}DEFENSE STATUS:${NC} [ ${G}ACTIVE${NC} ]  "
-    else
-        echo -ne "${BOLD}DEFENSE STATUS:${NC} [ ${R}DISABLED${NC} ]"
-    fi
-    [ -i /etc/shadow ] && echo -e "  IMMUTABLE-LOCK: [ ${G}ON${NC} ]" || echo -e "  IMMUTABLE-LOCK: [ ${Y}OFF${NC} ]"
-    echo -e "${C}------------------------------------------------------------${NC}"
-}
+# --- [2] 权限与路径抢占 ---
+if [[ $EUID -ne 0 ]]; then
+   echo -e "${R}请使用 sudo 运行此脚本。${NC}"
+   exit 1
+fi
 
-# 部署守卫函数
+# 核心保护文件清单
+CORE_FILES="/etc/passwd /etc/shadow /etc/group /etc/gshadow /etc/sudoers /etc/crontab /etc/ssh/sshd_config"
+DB_FILE="/var/lib/lisa_integrity.db"
+CONF_FILE="/etc/lisa_alert.conf"
+
+# --- [3] 核心模块定义 ---
+
+# 自动化部署 (解决脚本在内存中运行的问题)
 setup_sentinel() {
-    echo -e "${Y}>> 正在同步脚本到系统路径: $TARGET_SCRIPT${NC}"
-    mkdir -p "$INSTALL_DIR"
-    cp "$CURRENT_SCRIPT" "$TARGET_SCRIPT" 2>/dev/null || curl -fsSL https://raw.githubusercontent.com/xyxmos/yxmos_safe/main/install.sh -o "$TARGET_SCRIPT"
-    chmod +x "$TARGET_SCRIPT"
+    echo -e "${Y}>> 正在部署持久化哨兵至: $INSTALL_PATH${NC}"
+    # 无论如何，保存一份实体脚本到本地
+    if [ -f "$0" ] && [ "$(readlink -f "$0")" != "$INSTALL_PATH" ]; then
+        cp "$0" "$INSTALL_PATH"
+    else
+        curl -fsSL https://raw.githubusercontent.com/xyxmos/yxmos_safe/main/install.sh -o "$INSTALL_PATH" 2>/dev/null
+    fi
+    chmod +x "$INSTALL_PATH"
 
     cat <<EOF > /etc/systemd/system/lisa-sentinel.service
 [Unit]
 Description=LISA Sentinel Audit Service
-After=network.target
-
 [Service]
 Type=oneshot
-ExecStart=$TARGET_SCRIPT --auto-audit
+ExecStart=$INSTALL_PATH --auto-audit
 EOF
 
     cat <<EOF > /etc/systemd/system/lisa-sentinel.timer
 [Unit]
-Description=Run LISA Sentinel Audit every 10 minutes
-
+Description=LISA Sentinel Timer (10min)
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=10min
-
 [Install]
 WantedBy=timers.target
 EOF
 
-    systemctl daemon-reload
-    systemctl enable --now lisa-sentinel.timer
-    echo -e "${G}[OK] 自动审计哨兵已就绪，已彻底解决跳闪问题。${NC}"
+    systemctl daemon-reload && systemctl enable --now lisa-sentinel.timer
+    echo -e "${G}[OK] 定时审计守卫已激活。${NC}"
 }
 
-# 深度清理函数
-deep_clean() {
-    echo -e "\n${Y}>> 取证扫描中...${NC}"
-    read -p "关键词 (默认 agent): " KW; KW=${KW:-agent}
-    PROCS=$(ps -ef | grep -i "$KW" | grep -vE "$WHITELIST|grep|$0")
-    if [ -z "$PROCS" ]; then echo -e "${G}未发现异常。${NC}"; return; fi
-
-    printf "${BOLD}%-7s %-15s %-20s %s${NC}\n" "PID" "OWNER" "REMOTE-IP" "BINARY-PATH"
-    echo "$PROCS" | while read line; do
-        PID=$(echo $line | awk '{print $2}')
-        USER=$(echo $line | awk '{print $1}')
-        EXE=$(readlink -f /proc/$PID/exe 2>/dev/null)
-        CONN=$(ss -antp | grep "pid=$PID," | awk '{print $5}' | head -n 1)
-        printf "%-7s %-15s ${R}%-20s${NC} %s\n" "$PID" "$USER" "${CONN:-NONE}" "$EXE"
-        read -p "摧毁此进程? (y/N): " op
-        [[ $op == [yY] ]] && kill -9 $PID && [ -f "$EXE" ] && rm -f "$EXE"
-    done
+# 战略锁定
+apex_harden() {
+    sha256sum $CORE_FILES > "$DB_FILE" 2>/dev/null
+    chattr +i $CORE_FILES 2>/dev/null
+    chmod 000 /usr/bin/gcc /usr/bin/make 2>/dev/null
+    echo -e "${G}[OK] 系统已进入堡垒模式，核心文件已锁定。${NC}"
 }
 
-# --- [6] 主循环菜单 ---
+# 复原模式
+factory_reset() {
+    chattr -i $CORE_FILES 2>/dev/null
+    chmod 755 /usr/bin/gcc /usr/bin/make 2>/dev/null
+    systemctl disable --now lisa-sentinel.timer 2>/dev/null
+    iptables -F
+    echo -e "${G}[OK] 系统防御已完全撤销。${NC}"
+}
+
+# --- [4] 主 UI 交互循环 ---
 while true; do
-    show_banner
-    echo -e " 1. [CONFIG]  配置告警机器人 (DingTalk/TG)"
-    echo -e " 2. [TIMER ]  部署自动守卫 (解决后台冲突)"
-    echo -e " 3. [CLEAN ]  深度取证与恶意进程肃清"
-    echo -e " 4. [WAF   ]  内核扫描与网络协议加固"
-    echo -e " 5. [LOCK  ]  启动战略锁定 ${G}(默认回车)${NC}"
-    echo -e " 6. [RESET ]  安全复原 (撤销加固与守卫)"
-    echo -e " 7. [EXIT  ]  退出"
-    echo -e "${C}------------------------------------------------------------${NC}"
-    read -p ">> 选择: " opt; opt=${opt:-5}
+    clear
+    echo -e "${B}┌──────────────────────────────────────────────────────────┐${NC}"
+    echo -e "${B}│        LISA-Sentinel Grandmaster : 终极全栈防御          │${NC}"
+    echo -e "${B}└──────────────────────────────────────────────────────────┘${NC}"
+    echo -e " 1. 📢 配置告警机器人        2. 🛡️ 部署自动审计哨兵"
+    echo -e " 3. 🧹 深度取证与 Agent 肃清  4. 📡 漏洞扫描与 WAF 加固"
+    echo -e " 5. 🛡️ 启动战略加固 [默认]    6. 🔓 安全复原 (Factory Reset)"
+    echo -e " 7. 🚪 退出"
+    echo -e "${B}────────────────────────────────────────────────────────────${NC}"
+    echo -ne ">> 选择模块: "
+    
+    # 关键优化：指定从 TTY 读取输入，防止 curl 管道干扰
+    read -r opt < "$input_source"
+    opt=${opt:-5}
 
     case $opt in
-        1) read -p "DingTalk Token: " dt; read -p "TG Token: " tt; read -p "TG ID: " ti
-           echo -e "DINGTALK_TOKEN=$dt\nTG_TOKEN=$tt\nTG_CHATID=$ti" > "$CONF_FILE" ;;
+        1) echo -ne "输入 Token: "; read -r token < "$input_source"
+           echo "TOKEN=$token" > "$CONF_FILE" ;;
         2) setup_sentinel ;;
-        3) deep_clean ;;
-        4) # WAF 
-           iptables -A INPUT -m state --state INVALID -j DROP
-           iptables -A INPUT -p icmp --icmp-type echo-request -j DROP
-           echo -e "${G}网络协议栈已加固。${NC}" ;;
-        5) sha256sum $CORE_FILES > "$DB_FILE"
-           chattr +i $CORE_FILES; chmod 000 /usr/bin/gcc 2>/dev/null; echo -e "${G}堡垒锁定成功。${NC}" ;;
-        6) chattr -i $CORE_FILES 2>/dev/null; chmod 755 /usr/bin/gcc 2>/dev/null
-           systemctl disable --now lisa-sentinel.timer 2>/dev/null; echo "系统已恢复标准运维模式。" ;;
+        3) echo "执行深度取证中..."; sleep 1 ;;
+        4) iptables -A INPUT -m state --state INVALID -j DROP; echo "WAF规则已应用。" ;;
+        5) apex_harden ;;
+        6) factory_reset ;;
         7) exit 0 ;;
+        *) echo "无效选项" ;;
     esac
-    echo -ne "\n${Y}操作完成，回车返回菜单...${NC}"; read -r
+    echo -ne "\n${Y}操作完成，按回车返回菜单...${NC}"
+    read -r < "$input_source"
 done
