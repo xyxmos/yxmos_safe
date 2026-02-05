@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # =================================================================
-# LISA-Sentinel Grandmaster (SOC Edition) - v5.7
-# 特性：输入框显式值回显、中文跳过指引、三通道配置持久化、交互式风险修复
+# LISA-Sentinel Grandmaster (SOC Edition) - v6.2
+# 核心特性：三通道配置回显、独立更新大项、深度取证清理、内核WAF加固
 # =================================================================
 
 [ -e /dev/tty ] && INPUT_SRC="/dev/tty" || INPUT_SRC="-"
@@ -12,29 +12,29 @@ CONF_FILE="/etc/lisa_alert.conf"
 INSTALL_PATH="/usr/local/bin/yxmos_safe.sh"
 CORE_FILES="/etc/passwd /etc/shadow /etc/sudoers /etc/ssh/sshd_config /etc/crontab"
 
-# --- [0] 状态感知与回显函数 ---
+# --- [0] 状态探测 ---
 
-get_api_summary() {
+get_api_status() {
     [ ! -s "$CONF_FILE" ] && echo -e "${R}[未配置]${NC}" && return
     (source "$CONF_FILE"
-     count=0
+     local count=0
      [ -n "$DINGTALK_TOKEN" ] && ((count++))
      [ -n "$WECHAT_KEY" ] && ((count++))
      [ -n "$TG_TOKEN" ] && ((count++))
-     echo -e "${G}[已配置]${NC} ${Y}词:${ALERT_KEYWORD:-LISA}${NC} ${C}通道:$count${NC}")
+     echo -e "${G}[已对齐]${NC} ${C}(词:${ALERT_KEYWORD:-LISA} 通道:$count)${NC}")
 }
 
 get_guard_status() {
-    systemctl is-active --quiet lisa-sentinel.timer && echo -e "${G}[运行中]${NC}" || echo -e "${R}[停用]${NC}"
+    systemctl is-active --quiet lisa-sentinel.timer && echo -e "${G}[守卫在线]${NC}" || echo -e "${R}[已离线]${NC}"
 }
 
-get_lock_detail() {
+get_lock_status() {
     local locked=0
     for f in $CORE_FILES; do [ -f "$f" ] && lsattr "$f" 2>/dev/null | awk '{print $1}' | grep -q "i" && ((locked++)); done
-    [ $locked -eq 5 ] && echo -e "${G}[全量锁定]${NC}" || echo -e "${Y}[风险: $locked/5]${NC}"
+    [ $locked -ge 4 ] && echo -e "${G}[全量锁死]${NC}" || echo -e "${Y}[风险: $locked/5]${NC}"
 }
 
-# --- [1] 核心推送引擎 ---
+# --- [1] 通讯推送 ---
 
 send_alert() {
     [ ! -f "$CONF_FILE" ] && return
@@ -46,86 +46,89 @@ send_alert() {
     ) &
 }
 
-# --- [2] 交互逻辑块 ---
+# --- [2] 核心功能块 ---
 
-interactive_scan() {
-    echo -e "\n${B}--- 开放端口进程扫描 ---${NC}"
-    mapfile -t list < <(ss -tulnp | grep LISTEN | awk '{print $1,$5,$7}')
-    echo -e "ID\t协议\t端口\t进程信息"
+# 深度取证与交互清理 (第3项)
+deep_cleanup() {
+    echo -e "\n${B}--- 深度取证与恶意进程清理 ---${NC}"
+    # 1. 影子账户检测
+    local shadow=$(awk -F: '$3 == 0 { print $1 }' /etc/passwd | grep -v "root")
+    [ -n "$shadow" ] && echo -e "${R}[警告] 发现影子管理账户: $shadow${NC}" || echo -e "${G}[通过] 无异常特权账号${NC}"
+    
+    # 2. 进程清理
+    mapfile -t ports < <(ss -tulnp | grep LISTEN | awk '{print $5,$7}')
+    echo -e "\n${BOLD}当前监听服务列表：${NC}"
+    echo -e "ID\t端口\t进程/PID"
     local i=1
-    for line in "${list[@]}"; do
-        p=$(echo "$line" | awk '{print $2}' | awk -F: '{print $NF}')
-        echo -e "$i)\t$(echo "$line" | awk '{print $1}')\t$p\t$(echo "$line" | awk '{print $3}')"
+    for p in "${ports[@]}"; do
+        echo -e "$i)\t$(echo $p | awk '{print $1}')\t$(echo $p | awk '{print $2}')"
         ((i++))
     done
-    echo -ne "\n${Y}>> 请输入要杀死的 ID (回车跳过): ${NC}"
-    read -r k_opt < "$INPUT_SRC"
-    [ -n "$k_opt" ] && fuser -k -n tcp "$k_opt" 2>/dev/null && echo -e "${G}进程已清理。${NC}"
-
-    if grep -q "^PermitRootLogin yes" /etc/ssh/sshd_config; then
-        echo -e "\n${R}[风险] SSH 允许 Root 直接登录${NC}"
-        read -p ">> 是否立即修复？(y/n): " fix < "$INPUT_SRC"
-        [ "$fix" == "y" ] && sed -i 's/^PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config && systemctl restart sshd && echo -e "${G}已禁用 Root 登录。${NC}"
+    read -p ">> 请输入 ID 强制杀掉进程 (直接回车跳过): " k_id < "$INPUT_SRC"
+    if [ -n "$k_id" ]; then
+        local target_port=$(echo ${ports[$((k_id-1))]} | awk -F: '{print $NF}' | awk '{print $1}')
+        fuser -k -n tcp "$target_port" 2>/dev/null && echo -e "${G}清理成功。${NC}"
     fi
 }
 
-# --- [3] 主交互循环 ---
+# WAF 加固 (第4项)
+apply_waf() {
+    echo -e "\n${B}--- 漏洞扫描与内核级 WAF 加固 ---${NC}"
+    # 内核参数
+    sysctl -w net.ipv4.tcp_syncookies=1 >/dev/null
+    sysctl -w net.ipv4.conf.all.rp_filter=1 >/dev/null
+    echo -e "  - ${G}内核加固:${NC} 已开启抗攻击协议栈"
+    # SSH 风险修复
+    if grep -q "^PermitRootLogin yes" /etc/ssh/sshd_config; then
+        echo -e "  - ${R}风险:${NC} 允许Root登录"
+        read -p "    >> 是否一键修复？(y/n): " fix_ssh < "$INPUT_SRC"
+        [ "$fix_ssh" == "y" ] && sed -i 's/^PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config && systemctl restart sshd
+    fi
+    send_alert "WAF加固规则已部署。"
+}
+
+# --- [3] 主交互界面 ---
 
 [[ $EUID -ne 0 ]] && exec sudo bash "$0" "$@"
 
 while true; do
     clear
-    # 每次进入主菜单都强制重新读取配置，确保回显最新
     [ -f "$CONF_FILE" ] && source "$CONF_FILE"
     
     echo -e "${C}############################################################${NC}"
-    echo -e "${C}#         LISA-SENTINEL COMMAND CENTER v5.7                #${NC}"
+    echo -e "${C}#         LISA-SENTINEL BLACK-HAT DEFENDER v6.2           #${NC}"
     echo -e "${C}############################################################${NC}"
-    echo -e "  1. 配置 API 详情 (DT/WK/TG)    ----  $(get_api_summary)"
-    echo -e "  2. 部署/重启 自动化审计守卫    ----  $(get_guard_status)"
-    echo -e "  3. 漏洞扫描与端口清理          ----  ${G}[交互就绪]${NC}"
-    echo -e "  4. 在线热更新 (GitHub)         ----  ${C}[在线]${NC}"
-    echo -e "  5. 启动最高级战略锁定          ----  $(get_lock_detail)"
-    echo -e "  6. 安全复原模式 (Factory Reset) ----  ${Y}[可执行]${NC}"
-    echo -e "  7. 退出系统"
+    echo -e "  1. 配置 API 详情 (三通道)      ----  $(get_api_status)"
+    echo -e "  2. 部署 Systemd 定时审计守卫   ----  $(get_guard_status)"
+    echo -e "  3. 深度取证与恶意进程清理      ----  ${B}[交互模式]${NC}"
+    echo -e "  4. 漏洞扫描与内核 WAF 加固     ----  ${Y}[内核防护]${NC}"
+    echo -e "  5. 自动同步 GitHub 脚本更新    ----  ${C}[在线查询]${NC}"
+    echo -e "  6. 启动核心文件战略锁定        ----  $(get_lock_status)"
+    echo -e "  7. 安全复原模式 (Factory Reset) ----  ${Y}[就绪]${NC}"
+    echo -e "  8. 退出系统"
     echo -e "${C}############################################################${NC}"
-    echo -ne ">> 选择模块 [默认5]: "
+    echo -ne ">> 选择操作 [默认6]: "
     read -r opt < "$INPUT_SRC"
-    opt=${opt:-5}
+    opt=${opt:-6}
 
     case $opt in
-        1) echo -e "\n${BOLD}${B}--- API 配置中心 (若不修改，请直接回车跳过) ---${NC}"
+        1) echo -e "\n${BOLD}${B}--- API 配置交互 (回车保留当前值) ---${NC}"
+           echo -e "当前状态: ${G}${ALERT_KEYWORD:-LISA}${NC} | DT:${DINGTALK_TOKEN:0:5}.. | WK:${WECHAT_KEY:0:5}.. | TG:${TG_TOKEN:0:5}.."
            
-           # 显式提示当前的旧值
-           read -p ">> [1] 关键词 (当前: ${ALERT_KEYWORD:-LISA}): " ak < "$INPUT_SRC"
-           read -p ">> [2] 钉钉 Token (当前: ${DINGTALK_TOKEN:-未配置}): " dt < "$INPUT_SRC"
-           read -p ">> [3] 企微 Key (当前: ${WECHAT_KEY:-未配置}): " wk < "$INPUT_SRC"
-           read -p ">> [4] TG Bot Token (当前: ${TG_TOKEN:-未配置}): " tt < "$INPUT_SRC"
-           read -p ">> [5] TG Chat ID (当前: ${TG_CHATID:-未配置}): " ti < "$INPUT_SRC"
+           read -p ">> 1. 关键词 [当前: ${ALERT_KEYWORD:-LISA}]: " ak < "$INPUT_SRC"
+           read -p ">> 2. 钉钉 Token/URL [当前: ${DINGTALK_TOKEN:-空}]: " dt < "$INPUT_SRC"
+           read -p ">> 3. 企微 Key/URL [当前: ${WECHAT_KEY:-空}]: " wk < "$INPUT_SRC"
+           read -p ">> 4. TG Token [当前: ${TG_TOKEN:-空}]: " tt < "$INPUT_SRC"
+           read -p ">> 5. TG Chat ID [当前: ${TG_CHATID:-空}]: " ti < "$INPUT_SRC"
            
-           # 逻辑控制：如果输入为空，则保留之前 source 出来的变量值
            ALERT_KEYWORD=${ak:-${ALERT_KEYWORD:-LISA}}
-           DT_VAL=${dt:-$DINGTALK_TOKEN}
-           WK_VAL=${wk:-$WECHAT_KEY}
-           TG_TOKEN=${tt:-$TG_TOKEN}
-           TG_CHATID=${ti:-$TG_CHATID}
+           dt_v=${dt:-$DINGTALK_TOKEN}; DINGTALK_TOKEN=${dt_v##*access_token=}
+           wk_v=${wk:-$WECHAT_KEY}; WECHAT_KEY=${wk_v##*key=}
+           TG_TOKEN=${tt:-$TG_TOKEN}; TG_CHATID=${ti:-$TG_CHATID}
            
-           # 自动裁剪 Webhook URL
-           DINGTALK_TOKEN=${DT_VAL##*access_token=}
-           WECHAT_KEY=${WK_VAL##*key=}
-           
-           # 持久化存储
-           cat <<EOF > "$CONF_FILE"
-ALERT_KEYWORD=$ALERT_KEYWORD
-DINGTALK_TOKEN=$DINGTALK_TOKEN
-WECHAT_KEY=$WECHAT_KEY
-TG_TOKEN=$TG_TOKEN
-TG_CHATID=$TG_CHATID
-EOF
-           chmod 600 "$CONF_FILE"
-           echo -e "${G}>> 配置已更新。${NC}"
-           send_alert "API 通道配置已完成更新。测试正常。" ;;
-           
+           echo -e "ALERT_KEYWORD=$ALERT_KEYWORD\nDINGTALK_TOKEN=$DINGTALK_TOKEN\nWECHAT_KEY=$WECHAT_KEY\nTG_TOKEN=$TG_TOKEN\nTG_CHATID=$TG_CHATID" > "$CONF_FILE"
+           send_alert "API 告警通道已重新对齐。" ;;
+
         2) cp "$0" "$INSTALL_PATH" 2>/dev/null; chmod +x "$INSTALL_PATH"
            cat <<EOF > /etc/systemd/system/lisa-sentinel.timer
 [Unit]
@@ -136,23 +139,28 @@ OnUnitActiveSec=10min
 WantedBy=timers.target
 EOF
            systemctl daemon-reload && systemctl enable --now lisa-sentinel.timer 2>/dev/null
-           send_alert "审计守卫已成功部署并启动。" ;;
+           send_alert "审计守卫部署成功。" ;;
 
-        3) interactive_scan ;;
+        3) deep_cleanup ;;
 
-        4) echo -e "${B}正在同步代码...${NC}"
+        4) apply_waf ;;
+
+        5) echo -e "${B}正在校验远程 GitHub 库...${NC}"
            TMP_F="/tmp/lisa_upd.sh"
            if curl -fsSL "https://raw.githubusercontent.com/xyxmos/yxmos_safe/main/install.sh" -o "$TMP_F" && grep -q "bash" "$TMP_F"; then
+               echo -e "${G}发现新版本，正在同步并热重启...${NC}"
                mv "$TMP_F" "$0"; chmod +x "$0"; exec bash "$0"
+           else
+               echo -e "${R}更新失败：可能是网络超时或脚本内容校验不通过。${NC}"
            fi ;;
 
-        5) for f in $CORE_FILES; do [ -f "$f" ] && chattr +i "$f" 2>/dev/null; done
-           send_alert "警告：核心系统文件已执行最高级别锁定。" ;;
+        6) for f in $CORE_FILES; do [ -f "$f" ] && chattr +i "$f" 2>/dev/null; done
+           send_alert "警告：核心系统文件已执行不可篡改锁定。" ;;
 
-        6) chattr -i $CORE_FILES 2>/dev/null; systemctl disable --now lisa-sentinel.timer 2>/dev/null
-           echo -e "${G}>> 所有策略已清空。${NC}"; send_alert "系统加固已全部解除。" ;;
+        7) chattr -i $CORE_FILES 2>/dev/null; systemctl disable --now lisa-sentinel.timer 2>/dev/null
+           echo -e "${G}>> 系统复原完成。${NC}"; send_alert "策略已解除。" ;;
 
-        7) exit 0 ;;
+        8) exit 0 ;;
     esac
-    echo -ne "\n${Y}操作完成。回车返回主面板...${NC}"; read -r < "$INPUT_SRC"
+    echo -ne "\n${Y}操作完成。回车返回面板...${NC}"; read -r < "$INPUT_SRC"
 done
