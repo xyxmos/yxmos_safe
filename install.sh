@@ -1,74 +1,75 @@
 #!/bin/bash
 
 # =================================================================
-# LISA-Sentinel Grandmaster Elite (SOC Edition)
-# 普适性优化版：兼容所有主流终端，增强取证逻辑，支持云告警与自动守卫
+# LISA-Sentinel Elite - GitHub Universal Installer
 # =================================================================
 
 # --- 兼容性色彩定义 ---
-setup_colors() {
-    if [[ -t 1 ]]; then
-        R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
-        B='\033[0;34m'; P='\033[0;35m'; C='\033[0;36m'
-        NC='\033[0m'; BOLD='\033[1m'
-    else
-        R=''; G=''; Y=''; B=''; P=''; C=''; NC=''; BOLD=''
-    fi
-}
-setup_colors
+R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; B='\033[0;34m'; NC='\033[0m'
 
-# 核心路径与配置
-WHITELIST="gpg-agent|ssh-agent|1panel-agent|packagekit|auth|polkit|systemd|sshd|dbus|network"
-CORE_FILES="/etc/passwd /etc/shadow /etc/group /etc/gshadow /etc/sudoers /etc/crontab /etc/ssh/sshd_config"
-DB_FILE="/var/lib/lisa_integrity.db"
-CONF_FILE="/etc/lisa_alert.conf"
-SCRIPT_PATH=$(readlink -f "$0")
+# --- 1. 权限检查 (兼容 sh 写法) ---
+if [ "$(id -u)" -ne 0 ]; then
+   echo -e "${R}Error: 必须使用 root 权限运行！${NC}"
+   exit 1
+fi
 
-# --- [0] 权限抢占 (Anti-Rootkit) ---
-[[ $EUID -ne 0 ]] && exec sudo "$0" "$@"
-chattr -i $CORE_FILES 2>/dev/null
+# --- 2. 获取脚本绝对路径 ---
+SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || realpath "$0")
 
-# --- [1] 云端告警模块 ---
-send_alert() {
-    local msg="[LISA-Sentinel] Event: $1"
-    if [ -f "$CONF_FILE" ]; then
-        source "$CONF_FILE"
-        [ -n "$DINGTALK_TOKEN" ] && curl -s -m 5 -H "Content-Type: application/json" -d "{\"msgtype\": \"text\", \"text\": {\"content\": \"$msg\"}}" "https://oapi.dingtalk.com/robot/send?access_token=$DINGTALK_TOKEN" > /dev/null
-        [ -n "$TG_TOKEN" ] && curl -s -m 5 -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" -d "chat_id=$TG_CHATID&text=$msg" > /dev/null
-    fi
-}
+# --- 3. 核心功能菜单 ---
+while true; do
+    echo -e "\n${B}############################################################${NC}"
+    echo -e "${B}#         LISA-SENTINEL UNIVERSAL INSTALLER                #${NC}"
+    echo -e "${B}############################################################${NC}"
+    echo -e " 1) 部署自动审计守卫 (Systemd)"
+    echo -e " 2) 开启战略级加固 (锁定核心文件)"
+    echo -e " 3) 安全复原 (撤销所有限制)"
+    echo -e " 4) 退出"
+    echo -ne "\n${Y}请选择 [1-4]: ${NC}"
+    read opt
 
-# --- [2] 状态看板 (普适图形版) ---
-show_banner() {
-    clear
-    echo -e "${C}############################################################${NC}"
-    echo -e "${C}#         LISA-SENTINEL GRANDMASTER ELITE v2.0             #${NC}"
-    echo -e "${C}############################################################${NC}"
-    
-    # 守卫状态
-    if systemctl is-active --quiet lisa-sentinel.timer; then
-        echo -ne "${BOLD}DEFENSE STATUS:${NC} [ ${G}ACTIVE${NC} ]  "
-    else
-        echo -ne "${BOLD}DEFENSE STATUS:${NC} [ ${R}DISABLED${NC} ]"
-    fi
-    # 锁定状态
-    [ -i /etc/shadow ] && echo -e "  IMMUTABLE-LOCK: [ ${G}ON${NC} ]" || echo -e "  IMMUTABLE-LOCK: [ ${Y}OFF${NC} ]"
-    echo -e "${C}------------------------------------------------------------${NC}"
-}
-
-# --- [3] 深度取证与 Agent 肃清 ---
-deep_clean() {
-    echo -e "\n${Y}>> 启动深度取证扫描...${NC}"
-    read -p "请输入检索关键词 (PID/Name, 默认 agent): " KW; KW=${KW:-agent}
-    
-    # 提取多维证据
-    PROCS=$(ps -ef | grep -i "$KW" | grep -vE "$WHITELIST|grep|$0")
-    if [ -z "$PROCS" ]; then echo -e "${G}未发现异常进程。${NC}"; return; fi
-
-    printf "${BOLD}%-7s %-15s %-20s %s${NC}\n" "PID" "OWNER" "REMOTE-IP" "BINARY-PATH"
-    echo "$PROCS" | while read line; do
-        PID=$(echo $line | awk '{print $2}')
-        USER=$(echo $line | awk '{print $1}')
-        EXE=$(readlink -f /proc/$PID/exe 2>/dev/null)
-        CONN=$(ss -antp | grep "pid=$PID," | awk '{print $5}' | head -n 1)
-        printf
+    case "$opt" in
+        1)
+            # 写入 Service 文件
+            cat <<EOF > /etc/systemd/system/lisa-sentinel.service
+[Unit]
+Description=LISA Sentinel Service
+[Service]
+Type=oneshot
+ExecStart=$SCRIPT_PATH --auto-audit
+EOF
+            # 写入 Timer 文件
+            cat <<EOF > /etc/systemd/system/lisa-sentinel.timer
+[Unit]
+Description=Run LISA every 10min
+[Timer]
+OnUnitActiveSec=10min
+OnBootSec=2min
+[Install]
+WantedBy=timers.target
+EOF
+            systemctl daemon-reload
+            systemctl enable --now lisa-sentinel.timer
+            echo -e "${G}[OK] 定时守卫已启动。${NC}"
+            ;;
+        2)
+            # 战略锁定逻辑
+            chattr +i /etc/passwd /etc/shadow /etc/sudoers 2>/dev/null
+            chmod 000 /usr/bin/gcc 2>/dev/null
+            echo -e "${G}[OK] 系统已进入堡垒模式。${NC}"
+            ;;
+        3)
+            # 复原逻辑
+            chattr -i /etc/passwd /etc/shadow /etc/sudoers 2>/dev/null
+            chmod 755 /usr/bin/gcc 2>/dev/null
+            systemctl disable --now lisa-sentinel.timer 2>/dev/null
+            echo -e "${G}[OK] 安全限制已解除。${NC}"
+            ;;
+        4)
+            exit 0
+            ;;
+        *)
+            echo -e "${R}无效选项，请重新输入。${NC}"
+            ;;
+    esac
+done
