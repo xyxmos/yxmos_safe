@@ -11,3 +11,4 @@
 ### 🚀 安装与运行
 ```bash
 curl -sSO https://raw.githubusercontent.com/xyxmos/yxmos_safe/main/install.sh && bash install.sh
+![Uploading b44af832ceb3f737408584b09d711aa2.png…]()
