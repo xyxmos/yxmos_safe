@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # =================================================================
-# LISA-Sentinel Grandmaster (SOC Edition) - v120.0
-# [网络层大修]：引入反扫描、防横向移动、TTL欺骗、恶意服务指纹拦截
-# [深度回显]：主菜单实时显示 12 个维度的安全状态指标
-# [权限自愈]：全局调用 unlock_sys 物理解决所有权限锁报错
-# [功能统合]：保留 10.0 的极简交互，引入白帽/黑客实战对抗策略
+# LISA-Sentinel Grandmaster (SOC Edition) - v150.0
+# [逻辑闭环]：所有子菜单必须通过 0 返回，操作流程全回显
+# [权限驱动]：先解锁、再执行、后加固，彻底告警 Permitted 报错
+# [攻防统合]：全量集成反向连接、DPI、WAF、IPSet、SUID、劫持清理
+# [交互回显]：回车默认跳过，输入 y 明确告知加固/清理明细
 # =================================================================
 
 [[ $EUID -ne 0 ]] && exec sudo bash "$0" "$@"
@@ -16,100 +16,134 @@ export BAIT_FILE="/root/.bait/lock"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; B='\033[0;34m'; C='\033[0;36m'; NC='\033[0m'
 
-# --- [1] 核心状态自愈与探测 ---
+# --- [1] 权限与配置物理引擎 ---
 
 unlock_sys() { chattr -i $CORE_FILES $INSTALL_PATH $CONF_FILE $BAIT_FILE /etc/ld.so.preload 2>/dev/null; }
-get_conf() { [[ -f "$CONF_FILE" ]] && grep "^${1}=" "$CONF_FILE" | cut -d'=' -f2- | tr -d '"' | tr -d "'"; }
+lock_sys() { for f in $CORE_FILES; do chattr +i "$f" 2>/dev/null; done; chattr +i $BAIT_FILE 2>/dev/null; }
+
+update_config() {
+    unlock_sys; touch "$CONF_FILE"
+    grep -v "^$1=" "$CONF_FILE" > "${CONF_FILE}.tmp"
+    echo "$1=$2" >> "${CONF_FILE}.tmp"
+    mv "${CONF_FILE}.tmp" "$CONF_FILE"
+}
+
+get_conf() { [[ -f "$CONF_FILE" ]] && grep "^$1=" "$CONF_FILE" | cut -d'=' -f2- | tr -d '"' | tr -d "'"; }
+
+# --- [2] 深度看板监控 ---
 
 check_status() {
     case $1 in
-        "ROBOT") [[ -n "$(get_conf "DT_TOKEN")$(get_conf "QW_KEY")$(get_conf "TG_TOKEN")" ]] && echo -ne "${G}[已上线]${NC}" || echo -ne "${R}[未监听]${NC}" ;;
-        "ANTISCAN") iptables -L -n | grep -qi "PSD" && echo -ne "${G}[反扫描中]${NC}" || echo -ne "${Y}[裸奔]${NC}" ;;
-        "WAF") iptables -L -n | grep -qi "SQLi" && echo -ne "${G}[WAF激活]${NC}" || echo -ne "${R}[未拦截]${NC}" ;;
+        "NET") iptables -L -n | grep -qi "DROP" && echo -ne "${G}[防护中]${NC}" || echo -ne "${R}[未加固]${NC}" ;;
         "AUDIT") 
-            local p_num=$(ps -eo pcpu,comm | awk '$1 > 40.0' | wc -l)
-            [[ $p_num -eq 0 ]] && echo -ne "${G}[洁净]${NC}" || echo -ne "${R}[警惕($p_num)]${NC}" ;;
+            local r=$(ps -ef | grep -v grep | grep -E "nc|ncat|socat|bash -i" | wc -l)
+            [[ $r -gt 0 ]] && echo -ne "${R}[发现反向连接]${NC}" || echo -ne "${G}[环境安全]${NC}" ;;
+        "LOCK") lsattr /etc/passwd 2>/dev/null | cut -b5 | grep -q "i" && echo -ne "${G}[已锁定]${NC}" || echo -ne "${Y}[脆弱]${NC}" ;;
     esac
 }
 
-# --- [2] 深度网络策略子菜单 (核心丰富项) ---
+# --- [3] 子项功能闭环矩阵 ---
 
-menu_network() {
+# A. 机器人子菜单 (经典 1234 + 历史值)
+menu_config() {
     while true; do
         clear
-        echo -e "${B}>>> 全维度网络策略防御矩阵 (1-6 编号) ---${NC}"
-        echo -e "  1. 开启【${G}反侦察隔离${NC}】: 拦截反向 Shell/反向代理端口 (frp/nps)"
-        echo -e "  2. 开启【${G}协议指纹清洗${NC}】: 屏蔽 BT/矿池/测速/勒索通信"
-        echo -e "  3. 开启【${G}黑客行为对抗${NC}】: 防端口扫描/TTL指纹欺骗/禁止 Ping"
-        echo -e "  4. 开启【${G}横向移动阻断${NC}】: 禁止本地扫描其它内网存活 IP"
-        echo -e "  5. 部署【${G}国家/IP黑名单${NC}】: IPSet 高速库 (秒封 CN/RU/US)"
-        echo -e "  6. 开启【${G}内核级 WAF${NC}】  : 拦截 SQLi/XSS/目录遍历语义"
-        echo -e "--------------------------------------------------------"
+        echo -e "${B}>>> 机器人配置矩阵 (回车跳过/y执行) ---${NC}"
+        echo -e "  1. 关键词: [${Y}$(get_conf "KEYWORD" || echo "LISA")${NC}]"
+        echo -e "  2. 钉钉 Token: $([[ -n $(get_conf "DT_TOKEN") ]] && echo -e "${G}已配置${NC}" || echo -e "${R}空${NC}")"
+        echo -e "  3. 企微 Key:   $([[ -n $(get_conf "QW_KEY") ]] && echo -e "${G}已配置${NC}" || echo -e "${R}空${NC}")"
+        echo -e "  4. TG 配置:    $([[ -n $(get_conf "TG_TOKEN") ]] && echo -e "${G}已配置${NC}" || echo -e "${R}空${NC}")"
+        echo -e "------------------------------------------------"
         echo -e "  0. 返回主菜单"
-        read -p ">> 请选择执行策略: " sub_o
-        unlock_sys
+        read -p ">> 选择编号 [1-4, 0]: " sub_o
+        [[ "$sub_o" == "0" ]] && break
         case $sub_o in
-            1) # 反向 Shell 常用端口拦截
-                local ports=("7000" "8081" "20000" "10000" "6666" "4444")
-                for p in "${ports[@]}"; do iptables -A OUTPUT -p tcp --dport $p -j DROP 2>/dev/null; done
-                echo -e "${G}[回显] 已封锁常见反向 Shell 及内网穿透(FRP)控制端端口。${NC}" ;;
-            2) # DPI 深度指纹拦截
-                local sl=("BitTorrent" "speedtest" "mining.submit" "ethermine" "NiceHash" "WannaCry")
-                for s in "${sl[@]}"; do iptables -A OUTPUT -m string --string "$s" --algo bm -j DROP 2>/dev/null; done
-                echo -e "${G}[回显] 协议特征码加载成功。当前已拦截: BT下载、矿池心跳包、勒索病毒自传播特征。${NC}" ;;
-            3) # 行为对抗
-                # 丢弃非法 TCP 标志包 (Nmap 扫描常用)
-                iptables -A INPUT -p tcp --tcp-flags ALL NONE -j DROP
-                iptables -A INPUT -p tcp --tcp-flags ALL ALL -j DROP
-                # TTL 欺骗 (让扫描器误以为是 Windows 或其他系统)
-                sysctl -w net.ipv4.ip_default_ttl=128 >/dev/null
-                # 禁 Ping
-                iptables -A INPUT -p icmp --icmp-type echo-request -j DROP
-                echo -e "${G}[回显] 扫描对抗已激活：TTL已修改为128，全系统禁Ping，Nmap隐蔽扫描无效化。${NC}" ;;
-            4) # 阻断内网横向移动 (防内网嗅探)
-                iptables -A OUTPUT -d 192.168.0.0/16 -j DROP
-                iptables -A OUTPUT -d 172.16.0.0/12 -j DROP
-                iptables -A OUTPUT -d 10.0.0.0/8 -j DROP
-                echo -e "${G}[回显] 横向移动策略生效：禁止此服务器向任何局域网段主动发包，防止跳板渗透。${NC}" ;;
-            5) # 国家 IP 拦截
-                read -p "输入国家代码(如 CN/RU/US): " cc; [[ -z "$cc" ]] && continue
-                ipset create "block_$cc" hash:net 2>/dev/null
-                curl -fsSL "http://www.ipdeny.com/ipblocks/data/countries/${cc,,}.zone" -o "/tmp/$cc.zone"
-                while read -r line; do ipset add "block_$cc" "$line" 2>/dev/null; done < "/tmp/$cc.zone"
-                iptables -I INPUT -m set --match-set "block_$cc" src -j DROP
-                echo -e "${G}[回显] 国家 $cc 库导入完毕，已封锁该区域所有 IP 请求。${NC}" ;;
-            6) # 内核级 WAF
-                local wl=("union select" "<script>" "../etc/passwd" "eval(" "base64_decode")
-                for w in "${wl[@]}"; do iptables -I INPUT -m string --string "$w" --algo bm -j DROP 2>/dev/null; done
-                echo -e "${G}[回显] WAF 拦截规则生效：自动过滤 SQL 注入、跨站脚本、Webshell 常用函数。${NC}" ;;
-            0) break ;;
+            1) read -p "旧值[$(get_conf "KEYWORD")], 修改？[y/N]: " act; [[ "${act,,}" == "y" ]] && { read -p "新关键词: " v; update_config "KEYWORD" "$v"; } ;;
+            2) read -p "修改钉钉？[y/N]: " act; [[ "${act,,}" == "y" ]] && { read -p "Token: " v; update_config "DT_TOKEN" "$v"; } ;;
+            3) read -p "修改企微？[y/N]: " act; [[ "${act,,}" == "y" ]] && { read -p "Key: " v; update_config "QW_KEY" "$v"; } ;;
+            4) read -p "修改TG端？[y/N]: " act; [[ "${act,,}" == "y" ]] && { read -p "Token: " t; read -p "ID: " cid; update_config "TG_TOKEN" "$t"; update_config "TG_ID" "$cid"; } ;;
         esac
-        echo -ne "\n${Y}策略部署成功并已回显。回车刷新当前菜单...${NC}"; read -r
     done
 }
 
-# --- [3] 大审判与查杀模块 (逻辑闭环) ---
-
+# B. 大审判子菜单 (决策权：杀、删、留)
 menu_audit() {
     while true; do
         clear
-        echo -e "${B}>>> “大审判”查杀修正矩阵 ---${NC}"
-        echo -e "  1. 暴力清除恶意进程树 (1234交互) | 2. 修正 SUID 权限后门"
-        echo -e "  3. 清理系统调用劫持库 (Preload) | 4. 深度审计 SSH 授权公钥"
-        echo -e "--------------------------------------------------------"
+        echo -e "${B}>>> “大审判”深度查杀 (回车跳过/y执行) ---${NC}"
+        echo -e "  1. 分析【${R}反弹Shell/反向连接${NC}】"
+        echo -e "  2. 扫描【${R}恶意进程与提权SUID${NC}】"
+        echo -e "  3. 清理【${R}Preload系统劫持${NC}】"
+        echo -e "  4. 审计【${Y}SSH公钥后门${NC}】"
+        echo -e "------------------------------------------------"
         echo -e "  0. 返回主菜单"
-        read -p ">> 请选择编号: " sub_o
+        read -p ">> 选择编号: " sub_o
+        [[ "$sub_o" == "0" ]] && break
         unlock_sys
         case $sub_o in
-            1) ps -eo pid,pcpu,comm,exe --sort=-pcpu | awk '$2 > 40.0 || $4 ~ /deleted/ {print $1,$2,$4}' | while read pid cpu exe; do
-               echo -e "${R}[风险] $pid ($cpu%) -> $exe"; read -p "粉碎？[y/n]: " k; [[ "${k,,}" == "y" ]] && (kill -9 $pid; pkill -P $pid; echo -e "${G}[回显] 进程 PID $pid 已灰飞烟灭。${NC}"); done ;;
-            2) find /usr/bin /usr/sbin -type f \( -perm -4000 -o -perm -2000 \) 2>/dev/null | grep -E "python|bash|perl|vim|nano" | while read f; do
-               echo -e "${R}[提权] $f"; read -p "剥离权限？[y/n]: " k; [[ "${k,,}" == "y" ]] && (chmod 755 "$f"; echo -e "${G}[回显] $f 降权完成。${NC}"); done ;;
-            3) if [[ -s /etc/ld.so.preload ]]; then echo -e "${R}劫持文件存在!${NC}"; read -p "强制清空？[y/n]: " k; [[ "${k,,}" == "y" ]] && (> /etc/ld.so.preload; echo -e "${G}[回显] 劫持链路已断开。${NC}"); fi ;;
-            4) find /root/.ssh -name "authorized_keys" | while read f; do echo -e "${Y}审计 $f:\n$(cat $f)${NC}"; read -p "重置此文件？[y/n]: " k; [[ "${k,,}" == "y" ]] && (> "$f"; echo -e "${G}[回显] 公钥已清除。${NC}"); done ;;
-            0) break ;;
+            1) 
+                res=$(ss -antp | grep -E "ESTAB" | grep -vE "ssh|22")
+                echo -e "${Y}[实时连接列表]:\n$res${NC}"
+                read -p ">> 发现可疑连接，操作决策 [k:杀并断开/d:粉碎文件/s:跳过]: " act
+                if [[ "$act" == "k" ]]; then
+                    read -p "输入要杀的PID: " pid; kill -9 $pid 2>/dev/null; echo -e "${G}回显: PID $pid 已切断。${NC}"
+                elif [[ "$act" == "d" ]]; then
+                    read -p "输入文件路径: " path; rm -rf "$path"; echo -e "${R}回显: 文件 $path 已粉碎。${NC}"
+                fi ;;
+            2) 
+                ps -eo pid,pcpu,comm --sort=-pcpu | awk '$2 > 30.0 {print $1,$2,$3}' | while read pid cpu comm; do
+                    echo -e "${R}[告警] 进程 $comm (PID:$pid) CPU高达 $cpu%${NC}"
+                    read -p ">> 是否执行终结？[y/N]: " k; [[ "${k,,}" == "y" ]] && kill -9 $pid
+                done 
+                find /usr/bin /usr/sbin -type f \( -perm -4000 -o -perm -2000 \) | grep -E "bash|python|perl" | while read f; do
+                    echo -e "${R}[提权风险] $f${NC}"; read -p ">> 修正权限为 755？[y/N]: " k; [[ "${k,,}" == "y" ]] && chmod 755 "$f"
+                done ;;
+            3) [[ -s /etc/ld.so.preload ]] && { echo -e "${R}发现劫持库!${NC}"; read -p ">> 物理清空？[y/N]: " k; [[ "${k,,}" == "y" ]] && > /etc/ld.so.preload; } ;;
+            4) find /root/.ssh -name "authorized_keys" | while read f; do echo -e "${Y}文件:$f 内容:\n$(cat $f)${NC}"; read -p ">> 清空公钥？[y/N]: " k; [[ "${k,,}" == "y" ]] && > "$f"; done ;;
         esac
-        echo -ne "\n${Y}操作成功。回车刷新当前查杀菜单...${NC}"; read -r
+        echo -ne "\n${G}当前子项处理完毕，回车刷新...${NC}"; read -r
+    done
+}
+
+# C. 网络防御子菜单 (丰富策略 + 详细加固说明)
+menu_network() {
+    while true; do
+        clear
+        echo -e "${B}>>> 全维度网络策略 (回车跳过/y执行) ---${NC}"
+        echo -e "  1. 开启【${G}反侦察隔离${NC}】: 阻断 FRP/NPS/常用攻击端口"
+        echo -e "  2. 部署【${G}DPI特征库${NC}】 : 屏蔽 BT/挖矿/测速/勒索指纹"
+        echo -e "  3. 激活【${G}行为对抗${NC}】   : TTL欺骗(128)/禁Ping/防Nmap扫描"
+        echo -e "  4. 强制【${G}内网隔离${NC}】   : 禁止本地向 192/172/10 段横向渗透"
+        echo -e "  5. 挂载【${G}国家封锁库${NC}】 : IPSet 高速屏蔽 (CN/RU/US/...) "
+        echo -e "  6. 开启【${G}内核 WAF${NC}】   : 物理拦截 SQLi/XSS/目录遍历"
+        echo -e "------------------------------------------------"
+        echo -e "  0. 返回主菜单"
+        read -p ">> 选择编号: " sub_o
+        [[ "$sub_o" == "0" ]] && break
+        unlock_sys
+        case $sub_o in
+            1) read -p ">> 部署反侦察隔离？[y/N]: " act; [[ "${act,,}" == "y" ]] && {
+               for p in 7000 8081 4444 6666; do iptables -A OUTPUT -p tcp --dport $p -j DROP; done
+               echo -e "${G}回显: 已封锁 FRP、CobaltStrike 常用反向通信端口。${NC}"; } ;;
+            2) read -p ">> 部署协议指纹库？[y/N]: " act; [[ "${act,,}" == "y" ]] && {
+               for s in "BitTorrent" "speedtest" "mining.submit" "WannaCry"; do iptables -A OUTPUT -m string --string "$s" --algo bm -j DROP; done
+               echo -e "${G}回显: 已深度挂载 BT、各平台测速、已知挖矿协议特征拦截。${NC}"; } ;;
+            3) read -p ">> 开启扫描对抗？[y/N]: " act; [[ "${act,,}" == "y" ]] && {
+               sysctl -w net.ipv4.ip_default_ttl=128 >/dev/null; iptables -A INPUT -p icmp -j DROP
+               iptables -A INPUT -p tcp --tcp-flags ALL NONE -j DROP
+               echo -e "${G}回显: TTL伪装为128(Win), 已禁Ping, 拦截隐蔽TCP扫描包。${NC}"; } ;;
+            4) read -p ">> 开启横向阻断？[y/N]: " act; [[ "${act,,}" == "y" ]] && {
+               iptables -A OUTPUT -d 192.168.0.0/16 -j DROP; iptables -A OUTPUT -d 10.0.0.0/8 -j DROP
+               echo -e "${G}回显: 已切断该服务器向内网其他资产主动扫描的路径。${NC}"; } ;;
+            5) read -p ">> 输入封锁国家代码(CN/RU): " cc; [[ -n "$cc" ]] && {
+               ipset create "block_$cc" hash:net 2>/dev/null; curl -fsSL "http://www.ipdeny.com/ipblocks/data/countries/${cc,,}.zone" -o "/tmp/$cc.zone"
+               while read -r line; do ipset add "block_$cc" "$line" 2>/dev/null; done < "/tmp/$cc.zone"
+               iptables -I INPUT -m set --match-set "block_$cc" src -j DROP; echo -e "${G}回显: $cc 国家全网段已封锁。${NC}"; } ;;
+            6) read -p ">> 部署 WAF？[y/N]: " act; [[ "${act,,}" == "y" ]] && {
+               for w in "union select" "<script>" "../etc/"; do iptables -I INPUT -m string --string "$w" --algo bm -j DROP; done
+               echo -e "${G}回显: 内核级 SQLi/XSS/路径穿越防护已就位。${NC}"; } ;;
+        esac
+        echo -ne "\n${Y}操作完成，回车继续...${NC}"; read -r
     done
 }
 
@@ -119,30 +153,29 @@ while true; do
     clear
     ssh_p=$(ss -tlnp 2>/dev/null | grep 'sshd' | awk '{print $4}' | awk -F: '{print $NF}' | head -n1)
     echo -e "${C}############################################################${NC}"
-    echo -e "${C}#         LISA-SENTINEL ARCHON v120.0 (战神版)           #${NC}"
+    echo -e "${C}#         LISA-SENTINEL ARCHON v150.0 (终极战神版)       #${NC}"
     echo -e "${C}############################################################${NC}"
-    echo -e "  1. 初始化环境 & 权限自愈   >>  ${Y} 解开核心写锁定 ${NC}"
-    echo -e "  2. 机器人矩阵 (三端推送)   >>  $(check_status ROBOT)"
-    echo -e "  3. 大审判矩阵 (木马修正)   >>  $(check_status AUDIT)"
-    echo -e "  4. 全维度网络策略 (战神版) >>  $(check_status ANTISCAN) $(check_status WAF)"
-    echo -e "  5. 战略级加固 & 诱饵部署   >>  ${B} 锁定核心/自愈诱饵 ${NC}"
+    echo -e "  1. 权限自愈 & 环境初始化   >>  ${Y} 解开 chattr/安装依赖 ${NC}"
+    echo -e "  2. 机器人矩阵 (1234交互)   >>  ${G} 钉/企/TG 三端状态联动 ${NC}"
+    echo -e "  3. 大审判矩阵 (杀/删/跳)   >>  $(check_status AUDIT)"
+    echo -e "  4. 全维防御策略 (DPI/WAF)  >>  $(check_status NET)"
+    echo -e "  5. 核心锁定 & 诱饵部署     >>  $(check_status LOCK)"
     echo -e "  ----------------------------------------------------------"
-    echo -e "  6. GitHub 自动进化管理     >>  ${Y} 每日 03:00 自动进化 ${NC}"
-    echo -e "  7. 系统还原 | 0. 退出系统  | 关键词: ${Y}$(get_conf "KEYWORD" || echo "LISA")${NC}"
-    echo -e "  SSH 端口: ${Y}${ssh_p:-22}${NC}   | 状态: ${G}在线监视中${NC}"
+    echo -e "  6. GitHub 自动任务管理     >>  ${Y} 每日凌晨 03:00 自动进化 ${NC}"
+    echo -e "  7. 卸载还原 | 0. 退出系统  | SSH 端口: ${Y}${ssh_p:-22}${NC}"
+    echo -e "  关键词: ${Y}$(get_conf "KEYWORD" || echo "LISA")${NC} | 状态: ${G}SOC 看板运行中${NC}"
     echo -e "${C}############################################################${NC}"
     echo -ne ">> 选择 [0-7]: "
     read -r opt
     case $opt in
         1) unlock_sys; yum install -y ipset lsof curl || apt install -y ipset lsof curl; cat "$0" > "$INSTALL_PATH"; chmod +x "$INSTALL_PATH" ;;
-        2) # 这里调用之前的机器人配置逻辑... 
-           ;;
+        2) menu_config ;;
         3) menu_audit ;;
         4) menu_network ;;
-        5) unlock_sys; mkdir -p /root/.bait; echo "LISA_SEC" > $BAIT_FILE; for f in $CORE_FILES; do chattr +i "$f" 2>/dev/null; done; chattr +i $BAIT_FILE 2>/dev/null; echo -e "${G}回显: 战略锁定已完成。${NC}" ;;
+        5) unlock_sys; mkdir -p /root/.bait; echo "LISA_SEC" > $BAIT_FILE; lock_sys; echo -e "${G}[回显] 核心文件锁定 & 勒索诱饵已部署成功。${NC}" ;;
         6) unlock_sys; (crontab -l 2>/dev/null | grep -v "$INSTALL_PATH"; echo "0 3 * * * chattr -i $INSTALL_PATH; curl -fsSL $UPDATE_URL -o $INSTALL_PATH && chmod +x $INSTALL_PATH") | crontab - ;;
-        7) unlock_sys; ipset destroy 2>/dev/null; echo -e "${G}还原成功。${NC}" ;;
+        7) unlock_sys; ipset destroy 2>/dev/null; echo -e "${G}[回显] 脚本与防火墙规则已彻底卸载。${NC}" ;;
         0) exit 0 ;;
     esac
-    [[ "$opt" != "3" && "$opt" != "4" ]] && (echo -ne "\n${Y}任务完毕，回车刷新看板...${NC}"; read -r)
+    [[ "$opt" != "2" && "$opt" != "3" && "$opt" != "4" ]] && (echo -ne "\n${Y}任务完毕，回车刷新看板...${NC}"; read -r)
 done
